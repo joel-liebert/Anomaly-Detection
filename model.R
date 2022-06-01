@@ -1,3 +1,7 @@
+# TODO: optimize time
+# TODO: add score to final dataframe
+# TODO: ask Ray about what it means to put everything in a function
+
 #---- Useful Code ----
 # Time Code
 # ptm <- proc.time()
@@ -141,4 +145,20 @@ otri_usa_test_ticker_data <- ticker_data[ticker_data$ticker_index == '9_1', ] %>
 detect_anomaly(otri_usa_test_ticker_data)
 
 #---- Anomaly Detection for Multiple Tickers ----
+# Get a dataframe of every ticker
+tickers <- ticker_data %>% distinct(ticker_index)
 
+# Function to detect anomalies of a given ticker
+master_anomaly_detector <- function(df, ticker, anomaly_df) {
+  
+  anomaly     <- detect_anomaly(df[df$ticker_index == ticker, ])
+  result      <- data.frame(ticker = ticker, anomaly = anomaly)
+  anomaly_df <<- rbind(anomaly_df, result) # <<- alters global variable
+  
+}
+
+# Create empty dataframe and then run the anomaly detector on every ticker
+anomaly_df <- data.frame(ticker = NULL, anomaly = NULL)
+ptm <- proc.time()
+apply(tickers, 1, function(x) master_anomaly_detector(ticker_data, x, anomaly_df))
+proc.time() - ptm
