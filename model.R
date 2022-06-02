@@ -1,5 +1,6 @@
 # TODO: optimize time
-# TODO: add score to final dataframe
+# TODO: get rid of red warnings
+# TODO: create function for testing
 # TODO: ask Ray about what it means to put everything in a function
 
 #---- Useful Code ----
@@ -126,14 +127,24 @@ detect_anomaly <- function(df) {
     as_tibble() %>%
     time_decompose(data_value, merge = TRUE) %>%
     anomalize(remainder) %>%
-    time_recompose()
+    time_recompose() %>%
+    rowwise() %>% 
+    mutate(buffer_zero   = mean(remainder_l1, remainder_l2),
+           buffer_radius = abs(remainder_l2 - buffer_zero),
+           score = (abs(remainder) - buffer_zero) / buffer_radius)
   
-  if(anomaly_df[nrow(anomaly_df), 'anomaly'] == 'Yes') {
-    return(TRUE)
-  }
-  else {
-    return(FALSE)
-  }
+  score  <- anomaly_df[nrow(anomaly_df), 'score']
+  result <- anomaly_df[nrow(anomaly_df), 'anomaly']
+  
+  return(c(score, result))
+  
+  # Old method of returning
+  # if(anomaly_df[nrow(anomaly_df), 'anomaly'] == 'Yes') {
+  #   return(c(anomaly_df[nrow(anomaly_df), 'score'], TRUE))
+  # }
+  # else {
+  #   return(c(anomaly_df[nrow(anomaly_df), 'score'], FALSE))
+  # }
   
 }
 
@@ -145,20 +156,30 @@ otri_usa_test_ticker_data <- ticker_data[ticker_data$ticker_index == '9_1', ] %>
 detect_anomaly(otri_usa_test_ticker_data)
 
 #---- Anomaly Detection for Multiple Tickers ----
+# Ticker test dataset
+tickers_test <- ticker_data[ticker_data$granularity_item_id < 160, ] %>% 
+  arrange(granularity_item_id, data_timestamp)
+
+# Apply random fakes
+ticker_test_count <- n_distinct(tickers_test$granularity_item_id)
+random_indices    <- 140 * sort(sample.int(ticker_test_count, sample.int(ticker_test_count, 1)))
+tickers_test <- impute_fakes(tickers_test, random_indices, 0)
+
 # Get a dataframe of every ticker
-tickers <- ticker_data %>% distinct(ticker_index)
+tickers_ID <- tickers_test %>% distinct(ticker_index)
 
 # Function to detect anomalies of a given ticker
 master_anomaly_detector <- function(df, ticker, anomaly_df) {
   
   anomaly     <- detect_anomaly(df[df$ticker_index == ticker, ])
-  result      <- data.frame(ticker = ticker, anomaly = anomaly)
+  result      <- data.frame(ticker = ticker, score = anomaly$score, anomaly = anomaly[2])
   anomaly_df <<- rbind(anomaly_df, result) # <<- alters global variable
   
 }
 
 # Create empty dataframe and then run the anomaly detector on every ticker
-anomaly_df <- data.frame(ticker = NULL, anomaly = NULL)
-ptm <- proc.time()
-apply(tickers, 1, function(x) master_anomaly_detector(ticker_data, x, anomaly_df))
-proc.time() - ptm
+anomaly_df <- data.frame(ticker = NULL, score = NULL, anomaly = NULL)
+# ptm <- proc.time()
+apply(tickers_ID, 1, function(x) master_anomaly_detector(tickers_test, x, anomaly_df))
+# proc.time() - ptm
+
