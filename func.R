@@ -10,7 +10,7 @@ load_packages <- function() {
 
 
 #---- Load Data ----
-load_data <- function(days_of_data, where_clause = "TRUE") {
+load_data <- function(days_of_data, target_date = Sys.Date(), where_clause = "TRUE") {
   
   start_time <- proc.time()
   
@@ -29,13 +29,9 @@ load_data <- function(days_of_data, where_clause = "TRUE") {
   # Read in ticker data
   ticker_data  <- dbGetQuery(bqcon, paste0("SELECT *
                                           FROM `freightwaves-data-factory.index_time_series.indx_index_data`
-                                            AS index_data
-                                          --JOIN freightwaves-data-factory.index_time_series.indx_index_definition
-                                          --  AS index_definition
-                                          --ON index_data.index_id = index_definition.id
-                                          WHERE data_timestamp BETWEEN TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL ", days_of_data, " DAY))
-                                                                   AND TIMESTAMP(CURRENT_DATE())
-                                          AND ",  where_clause))
+                                          WHERE data_timestamp BETWEEN TIMESTAMP(DATE_SUB(TIMESTAMP('", target_date, "'), INTERVAL ", days_of_data, " DAY))
+                                                                   AND TIMESTAMP('", target_date, "')
+                                           AND ",  where_clause))
   # Get rid of useless columns and turn appropriate values into factors
   ticker_data <- ticker_data %>% 
     mutate(ticker_index        = factor(paste(index_id, granularity_item_id, sep = "_")),
@@ -80,7 +76,7 @@ detect_anomaly <- function(input_df, ticker) {
     select(data_timestamp, data_value) %>% 
     arrange(data_timestamp) %>% 
     as_tibble() %>%
-    time_decompose(data_value, merge = TRUE, message = FALSE) %>%
+    time_decompose(data_value, merge = TRUE, message = FALSE, frequency = "1 week") %>%
     anomalize(remainder) %>%
     time_recompose() %>%
     rowwise() %>% 
@@ -89,12 +85,14 @@ detect_anomaly <- function(input_df, ticker) {
            score = (abs(remainder) - buffer_zero) / buffer_radius)
   
   df_len        <- nrow(df)
+  date          <- df[df_len, 'data_timestamp']
   value         <- as.numeric(df[df_len, 'data_value'])
   seven_day_avg <- as.numeric(mean(df$data_value[(df_len-7) : df_len]))
   score         <- as.numeric(df[df_len, 'score'])
   anomaly       <- as.character(df[df_len, 'anomaly'])
+  repetitions   <- as.numeric(sum(df$data_value[(df_len-8) : df_len-1] == value))
   
-  result <- data.frame(ticker = ticker, value = value, seven_day_avg = seven_day_avg, score = score, anomaly = anomaly)
+  result <- data.frame(ticker = ticker, date = date, value = value, seven_day_avg = seven_day_avg, score = score, anomaly = anomaly, repetitions = repetitions)
   return(result)
   
 }
@@ -106,7 +104,7 @@ master_anomaly_detector <- function(ticker_data, ticker_gran, ticker_info) {
   start_time <- proc.time()
   
   # Create empty dataframe and then run the anomaly detector on every ticker
-  anomaly_df <- data.frame(ticker = NULL, value = NULL, seven_day_avg = NULL, score = NULL, anomaly = NULL)
+  anomaly_df <- data.frame(ticker = NULL, date = NULL, value = NULL, seven_day_avg = NULL, score = NULL, anomaly = NULL, repetitions = NULL)
   
   # Get a dataframe of every ticker
   ticker_IDs <- ticker_data %>% distinct(ticker_index)
@@ -121,7 +119,7 @@ master_anomaly_detector <- function(ticker_data, ticker_gran, ticker_info) {
     separate(ticker, c('index', 'region'), sep = '_', remove = FALSE) %>%
     merge(ticker_gran, by.x = 'region', by.y = 'id', all.x = TRUE) %>%
     merge(ticker_info, by.x = 'index',  by.y = 'id', all.x = TRUE) %>%
-    select(c(index, region, ticker.x, value, seven_day_avg, score, anomaly, granularity1, Description, index_name, ticker.y, description, display_unit_type, documentation_url)) %>% 
+    select(c(data_timestamp, index, region, ticker.x, value, seven_day_avg, score, anomaly, repetitions, granularity1, Description, index_name, ticker.y, description, display_unit_type, documentation_url)) %>% 
     rename(ticker           = ticker.x,
            ticker_index     = ticker.y,
            granularity      = granularity1,
