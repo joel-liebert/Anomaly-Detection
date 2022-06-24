@@ -4,7 +4,7 @@ days_of_data <- 28
 
 data <- load_data(days_of_data = days_of_data,
                   target_date  = Sys.Date(),
-                  where_clause = "index_id IN (3, 9, 11)")
+                  where_clause = "index_id IN (3) AND granularity_item_id < 200")
 ticker_data = data[[1]]
 ticker_gran = data[[2]]
 ticker_info = data[[3]]

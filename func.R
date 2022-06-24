@@ -93,13 +93,13 @@ detect_anomaly <- function(input_df, ticker_index) {
     select(data_timestamp, data_value) %>% 
     arrange(data_timestamp) %>% 
     as_tibble() %>%
-    time_decompose(data_value, merge = TRUE, message = FALSE, frequency = "1 week") %>%
+    time_decompose(data_value, merge = TRUE, message = FALSE, frequency = "weekly") %>%
     anomalize(remainder) %>%
     time_recompose() %>%
     rowwise() %>% 
-    mutate(buffer_zero   = mean(remainder_l1, remainder_l2),
+    mutate(buffer_zero   = mean(c(remainder_l1, remainder_l2)),
            buffer_radius = abs(remainder_l2 - buffer_zero),
-           score = (abs(remainder) - buffer_zero) / buffer_radius)
+           score         = (abs(remainder - buffer_zero)) / buffer_radius)
   
   df_len        <- nrow(df)
   date          <- df[df_len, 'data_timestamp']
@@ -140,8 +140,8 @@ master_anomaly_detector <- function(ticker_data, ticker_gran, ticker_info) {
     separate(ticker_index, c('index', 'region'), sep = '_', remove = FALSE) %>%
     merge(ticker_gran, by.x = 'region', by.y = 'id', all.x = TRUE) %>%
     merge(ticker_info, by.x = 'index',  by.y = 'id', all.x = TRUE) %>%
-    select(c(data_timestamp, index, region, ticker_index, value, seven_day_avg,
-             score, anomaly, repetitions, frequency.x, frequency.y, granularity1, Description,
+    select(c(data_timestamp, index, region, ticker_index, anomaly, value, seven_day_avg,
+             score, repetitions, frequency.x, frequency.y, granularity1, Description,
              index_name, ticker, description, display_unit_type, documentation_url)) %>% 
     rename(frequency        = frequency.x,
            alleged_freq     = frequency.y,
