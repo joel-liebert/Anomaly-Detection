@@ -1,5 +1,3 @@
--- TODO: index 185 has 0s that show up in division and halt the query
-
 declare eval_date timestamp;
 declare data_periods  int64;
 declare ind_id        int64;
@@ -8,7 +6,7 @@ declare day_hours     int64;
 
 set eval_date    = timestamp(current_date);
 set data_periods = 28;
-set ind_id       = 185;
+set ind_id       = 10000;
 set stddev_lim   = 4;
 set day_hours    = 24;
 
@@ -72,6 +70,14 @@ with row_data as (
       ,avg(time_diff)
         over standard
         as avg_time_diff
+      ,case when detrended_val = 0
+        then 1
+        else 0
+        end as repeated_vals
+      ,case when detrended_val = 0
+        then 0
+        else 1
+        end as reset_reps
     from detrended_data
     where max_row_num >= data_periods
     window standard as (
@@ -83,11 +89,34 @@ with row_data as (
   ,stddev_data as (
     select
       *
-    ,extract(hour from avg_time_diff)
-      as avg_hrs_diff
-    ,round(abs(detrended_val - detrended_avg) / detrended_std_dev, 4)
-      as stddev_away
+      ,extract(hour from avg_time_diff)
+        as avg_hrs_diff
+      ,case when detrended_std_dev != 0
+        then round(abs(detrended_val - detrended_avg) / detrended_std_dev, 4)
+        else 0
+        end as stddev_away
+      ,sum(repeated_vals)
+        over (partition by index_id, granularity_item_id
+              order by data_timestamp)
+        as rep_running_total
+      ,sum(reset_reps)
+        over (partition by index_id, granularity_item_id
+              order by data_timestamp)
+        as reset_reps_sum
     from stats_data
+  )
+  ,repeated_data as (
+    select
+      *
+      ,sum(
+        case when reset_reps = 1
+        then 1
+        else repeated_vals
+        end
+        ) over (partition by index_id, granularity_item_id, reset_reps_sum
+                order by data_timestamp)
+        as repetitions
+    from stddev_data
   )
 
 select
@@ -99,6 +128,7 @@ select
   ,ticker_data.data_value
   ,ticker_data.prev_val
   ,ticker_data.seven_period_avg
+  ,ticker_data.repetitions
   ,ticker_data.detrended_val
   ,ticker_data.detrended_avg
   ,ticker_data.detrended_std_dev
@@ -119,7 +149,7 @@ select
   ,ticker_data.index_id
   ,ticker_data.granularity_item_id
   ,gran_data.granularity1
-from stddev_data as ticker_data
+from repeated_data as ticker_data
 join `freightwaves-data-factory.index_time_series.indx_granularity_item` as gran_data
   on ticker_data.granularity_item_id = gran_data.id
 join `freightwaves-data-factory.index_time_series.indx_index_definition` as info_data
