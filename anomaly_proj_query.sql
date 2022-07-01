@@ -1,10 +1,10 @@
-declare eval_date timestamp;
+declare eval_date      date;
 declare data_periods  int64;
 declare ind_id        int64;
 declare stddev_lim  float64;
 declare day_hours     int64;
 
-set eval_date    = timestamp(current_date);
+set eval_date    = current_date;
 set data_periods = 28;
 set ind_id       = 10000;
 set stddev_lim   = 4;
@@ -36,7 +36,7 @@ with row_data as (
               rows between 7 preceding and 1 preceding), 4)
         as seven_period_avg
     from `freightwaves-data-factory.index_time_series.indx_index_data`
-    where data_timestamp <= eval_date
+    where data_timestamp <= timestamp(eval_date)
       and index_id        < ind_id
     window standard as (
       partition by index_id, granularity_item_id
@@ -120,7 +120,6 @@ with row_data as (
   )
 
 select
-  -- *
   case when ticker_data.stddev_away >= stddev_lim
     then 1
     else 0
@@ -128,34 +127,59 @@ select
   ,ticker_data.data_value
   ,ticker_data.prev_val
   ,ticker_data.seven_period_avg
-  ,ticker_data.repetitions
   ,ticker_data.detrended_val
   ,ticker_data.detrended_avg
   ,ticker_data.detrended_std_dev
   ,ticker_data.stddev_away
+  ,ticker_data.repetitions
   ,ticker_data.data_timestamp
-  -- ,row_num
-  ,info_data.ticker
   ,info_data.index_name
-    as granularity
+    as ticker_desc
   ,gran_data.Description
     as gran_desc
+  ,info_data.description
+    as info
+  ,info_data.ticker
+  ,gran_data.granularity1
+    as granularity
   ,info_data.frequency
   ,avg_hrs_diff / day_hours
     as avg_days_bw_records
   ,info_data.unit_type
-  ,info_data.description
-    as info_desc
   ,ticker_data.index_id
   ,ticker_data.granularity_item_id
-  ,gran_data.granularity1
+  -- *,
+  -- ,last_date
+  -- ,most_recent_date
+  -- ,row_num
+  -- ,time_diff
+  -- ,avg_time_diff
+  -- ,max_row_num
+  -- ,repeated_vals
+  -- ,reset_reps
+  -- ,rep_running_total
+  -- ,reset_reps_sum
+  -- ,granularity2
+  -- ,ShapeFile
+  -- ,map_display
+  -- ,chart_display
+  -- ,precision
+  -- ,invert_color
+  -- ,has_past_data
+  -- ,has_future_data
+  -- ,product
+  -- ,data_source
+  -- ,elt_id
+  -- ,documentation_url
+  -- ,periodicity
+  -- ,display_unit_type
 from repeated_data as ticker_data
 join `freightwaves-data-factory.index_time_series.indx_granularity_item` as gran_data
   on ticker_data.granularity_item_id = gran_data.id
 join `freightwaves-data-factory.index_time_series.indx_index_definition` as info_data
   on ticker_data.index_id = info_data.id
-where data_timestamp = most_recent_date
--- where data_timestamp = eval_date - 1
+-- where data_timestamp = most_recent_date
+where data_timestamp = timestamp(eval_date - 1)
 order by
   anomaly desc
   ,ticker_data.stddev_away desc
