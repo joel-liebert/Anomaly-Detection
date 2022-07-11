@@ -1,21 +1,28 @@
-declare eval_date      date;
-declare data_periods  int64;
-declare ind_id        int64;
-declare stddev_lim  float64;
-declare day_hours     int64;
+declare eval_date        date; -- the date to be evaluated
+declare data_periods    int64; -- the number of days/weeks/months included in the calculations
+declare ind_id          int64; -- the largest index to be evaluated
+declare stddev_lim    float64; -- the threshold for standard deviations
+declare value_rep_lim float64; -- the threshold for consecutive value repetitions
+declare update_lim    float64; -- the threshold multiplier for days since last update
+declare day_hours       int64; -- the number of hours in a day
 
-set eval_date    = current_date;
-set data_periods = 28;
-set ind_id       = 10000;
-set stddev_lim   = 4;
-set day_hours    = 24;
+set eval_date     = current_date;
+set data_periods  = 28;
+set ind_id        = 10000;
+set stddev_lim    = 4.5;
+set value_rep_lim = 3;
+set update_lim    = 1;
+set day_hours     = 24;
 
 with row_data as (
     select
       data_timestamp
+        as date_recorded
       ,lag(data_timestamp)
         over standard
         as last_date
+      ,current_date
+        as run_date
       ,last_value(data_timestamp)
         over (standard
               range between unbounded preceding and unbounded following)
@@ -27,14 +34,14 @@ with row_data as (
       ,index_id
       ,granularity_item_id
       ,round(data_value, 4)
-        as data_value
+        as value
       ,round(lag(data_value, 1)
         over standard, 4)
-        as prev_val
+        as previous_value
       ,round(avg(data_value)
         over (standard
               rows between 7 preceding and 1 preceding), 4)
-        as seven_period_avg
+        as previous_seven_period_avg
     from `freightwaves-data-factory.index_time_series.indx_index_data`
     where data_timestamp <= timestamp(eval_date)
       and index_id        < ind_id
@@ -46,62 +53,64 @@ with row_data as (
   ,detrended_data as (
     select
       *
-      ,abs(round(data_value - prev_val, 4))
-        as detrended_val
-      ,data_timestamp - last_date
+      ,abs(round(value - previous_value, 4))
+        as absolute_one_period_difference
+      ,date_recorded - last_date
         as time_diff
-      ,max(row_num)
-        over (partition by index_id, granularity_item_id
-              order by data_timestamp
-              range between unbounded preceding and unbounded following)
-        as max_row_num
+      -- ,max(row_num)
+      --   over (partition by index_id, granularity_item_id
+      --         order by data_timestamp
+      --         range between unbounded preceding and unbounded following)
+      --   as max_row_num
     from row_data
     where row_num <= data_periods
   )
   ,stats_data as (
     select
       *
-      ,round(avg(detrended_val)
+      ,round(avg(absolute_one_period_difference)
         over standard, 4)
-        as detrended_avg
-      ,round(stddev_samp(detrended_val)
+        as average
+      ,round(stddev_samp(absolute_one_period_difference)
         over standard, 4)
-        as detrended_std_dev
+        as standard_deviation
       ,avg(time_diff)
         over standard
-        as avg_time_diff
-      ,case when detrended_val = 0
+        as avg_days_bw_periods
+      ,case when absolute_one_period_difference = 0
         then 1
         else 0
-        end as repeated_vals
-      ,case when detrended_val = 0
+        end as repeated_values
+      ,case when absolute_one_period_difference = 0
         then 0
         else 1
-        end as reset_reps
+        end as reset_count
     from detrended_data
-    where max_row_num >= data_periods
+    -- where max_row_num >= data_periods
     window standard as (
       partition by index_id, granularity_item_id
-      order by data_timestamp
+      order by date_recorded
       range between unbounded preceding and unbounded following
     )
   )
   ,stddev_data as (
     select
       *
-      ,extract(hour from avg_time_diff)
-        as avg_hrs_diff
-      ,case when detrended_std_dev != 0
-        then round(abs(detrended_val - detrended_avg) / detrended_std_dev, 4)
+      ,extract(hour from avg_days_bw_periods) / day_hours
+        as avg_days_bw_data
+      ,extract(hour from (timestamp(run_date) - date_recorded)) / day_hours
+        as days_since_last_update
+      ,case when standard_deviation != 0
+        then round(abs(absolute_one_period_difference - average) / standard_deviation, 4)
         else 0
-        end as stddev_away
-      ,sum(repeated_vals)
+        end as absolute_standard_deviations_from_avg
+      -- ,sum(repeated_vals)
+      --   over (partition by index_id, granularity_item_id
+      --         order by data_timestamp)
+      --   as rep_running_total
+      ,sum(reset_count)
         over (partition by index_id, granularity_item_id
-              order by data_timestamp)
-        as rep_running_total
-      ,sum(reset_reps)
-        over (partition by index_id, granularity_item_id
-              order by data_timestamp)
+              order by date_recorded)
         as reset_reps_sum
     from stats_data
   )
@@ -109,45 +118,76 @@ with row_data as (
     select
       *
       ,sum(
-        case when reset_reps = 1
+        case when reset_count = 1
         then 1
-        else repeated_vals
+        else repeated_values
         end
         ) over (partition by index_id, granularity_item_id, reset_reps_sum
-                order by data_timestamp)
-        as repetitions
+                order by date_recorded)
+        as data_repetitions
     from stddev_data
+  )
+  ,flag_data as (
+    select
+      *
+      ,case when absolute_standard_deviations_from_avg >= stddev_lim
+        then 1
+        else 0
+        end as standard_deviation_flag
+      ,case when data_repetitions >= value_rep_lim
+        then 1
+        else 0
+        end as data_repetitions_flag
+      ,case when days_since_last_update > update_lim * avg_days_bw_data
+        then 1
+        else 0
+        end as days_since_last_update_flag
+      from repeated_data
   )
 
 select
-  case when ticker_data.stddev_away >= stddev_lim
+  case when
+      ticker_data.standard_deviation_flag        = 1
+      or ticker_data.data_repetitions_flag       = 1
+      or ticker_data.days_since_last_update_flag = 1
     then 1
     else 0
     end as anomaly
-  ,ticker_data.data_value
-  ,ticker_data.prev_val
-  ,ticker_data.seven_period_avg
-  ,ticker_data.detrended_val
-  ,ticker_data.detrended_avg
-  ,ticker_data.detrended_std_dev
-  ,ticker_data.stddev_away
-  ,ticker_data.repetitions
-  ,ticker_data.data_timestamp
+  ,ticker_data.standard_deviation_flag
+  ,ticker_data.data_repetitions_flag
+  ,ticker_data.days_since_last_update_flag
+  ,ticker_data.value
+  ,ticker_data.previous_value
+  ,ticker_data.previous_seven_period_avg
+  ,ticker_data.absolute_one_period_difference
+  ,ticker_data.average
+  ,ticker_data.standard_deviation
+  ,ticker_data.absolute_standard_deviations_from_avg
+  ,case when ticker_data.value - ticker_data.previous_value < 0
+    then -1 * ticker_data.absolute_standard_deviations_from_avg
+    else      ticker_data.absolute_standard_deviations_from_avg
+    end as standard_deviations_from_avg
+  ,ticker_data.data_repetitions
+  ,ticker_data.date_recorded
+  ,ticker_data.run_date
   ,info_data.index_name
-    as ticker_desc
+    as ticker
   ,gran_data.Description
-    as gran_desc
-  ,info_data.description
-    as info
-  ,info_data.ticker
-  ,gran_data.granularity1
     as granularity
+  ,info_data.description
+    as ticker_info
+  ,info_data.ticker
+    as ticker_code
+  ,gran_data.granularity1
+    as granularity_code
   ,info_data.frequency
-  ,avg_hrs_diff / day_hours
-    as avg_days_bw_records
+    as data_pull_frequency
+  ,ticker_data.avg_days_bw_data
+  ,ticker_data.days_since_last_update
   ,info_data.unit_type
   ,ticker_data.index_id
   ,ticker_data.granularity_item_id
+    as granularity_id
   -- *,
   -- ,last_date
   -- ,most_recent_date
@@ -173,15 +213,16 @@ select
   -- ,documentation_url
   -- ,periodicity
   -- ,display_unit_type
-from repeated_data as ticker_data
+from flag_data as ticker_data
 join `freightwaves-data-factory.index_time_series.indx_granularity_item` as gran_data
   on ticker_data.granularity_item_id = gran_data.id
 join `freightwaves-data-factory.index_time_series.indx_index_definition` as info_data
   on ticker_data.index_id = info_data.id
--- where data_timestamp = most_recent_date
-where data_timestamp = timestamp(eval_date - 1)
+-- where date_recorded = most_recent_date
+where date_recorded = timestamp(eval_date)
 order by
-  anomaly desc
-  ,ticker_data.stddev_away desc
-  ,ticker_data.data_timestamp desc
+  ticker_data.absolute_standard_deviations_from_avg desc
+  ,ticker_data.date_recorded desc
   ,ticker_data.granularity_item_id
+  -- ticker_data.granularity_item_id
+  -- ,ticker_data.date_recorded desc
